@@ -137,7 +137,10 @@ released exactly once.
   (include all three keys; `adoptedOutput` is what Adopt writes)
 - convert request: `{"text": "...", "parameter": "<chosen candidate id>"}`
 - convert response: the success shape, or `{"error": "failed"}` /
-  `{"error": "inputTooLarge"}`
+  `{"error": "inputTooLarge"}`. Optional `"reason"` (string) maps to typed
+  hints when recognized (`sourceLanguageUndetected`, `alreadyInTargetLanguage`,
+  `languagePackMissing`, `unsupportedLanguagePair`, `inputTooLarge`); unknown
+  values collapse to a generic failure.
 
 ## Contracts the host relies on
 

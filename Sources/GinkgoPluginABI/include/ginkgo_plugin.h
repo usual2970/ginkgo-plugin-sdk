@@ -49,7 +49,11 @@ extern "C" {
  *                 or NULL for "this plugin has nothing to say".
  * convert request:  {"text": "...", "parameter": "<chosen candidate id>"}
  * convert response: the success shape above, or
- *                 {"error": "failed" | "inputTooLarge"}.
+ *                 {"error": "failed" | "inputTooLarge", "reason": "<optional>"}.
+ *                 When "reason" is present the host maps known values to typed
+ *                 conversion hints (e.g. sourceLanguageUndetected,
+ *                 alreadyInTargetLanguage, languagePackMissing,
+ *                 unsupportedLanguagePair); unknown reasons collapse to failed.
  *
  * "title" is the short headline; "body" the insight text shown beside the
  * clip; "adoptedOutput" what Adopt writes (defaults honored by the host
