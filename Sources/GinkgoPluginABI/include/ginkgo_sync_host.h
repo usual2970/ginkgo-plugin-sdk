@@ -115,6 +115,14 @@ typedef struct ginkgo_sync_host_v1 {
  * Keys, tokens, and the export cursor persist in the plugin's own state
  * (never the pasteboard, never the host's history store).
  *
+ * mint_pairing_code takes
+ *   {"passphrase":"..."}   // the vault passphrase, re-entered to wrap
+ *                          // the vault key for the joining device
+ * and returns the get_state shape PLUS
+ *   {"pairingCode":"<8 chars>","expiresAt":<unix seconds>}
+ * or the error shape. Only valid while configured; the code is
+ * single-use and short-lived (see sync-protocol.md).
+ *
  * run_sync_cycle performs ONE full pass — push local deltas and blobs,
  * pull and apply remote changes, then notify_status — returning 0 on
  * success and non-zero on failure. It must tolerate being called with no
@@ -129,6 +137,7 @@ typedef struct ginkgo_sync_client_v1 {
     char *(*get_state)(void);
     char *(*create_vault)(const char *request_json);
     char *(*join_vault)(const char *request_json);
+    char *(*mint_pairing_code)(const char *request_json);
     int32_t (*run_sync_cycle)(const ginkgo_sync_host_v1 *host);
     void (*cancel)(void);
     void (*free_string)(const char *string);
