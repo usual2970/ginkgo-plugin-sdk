@@ -15,7 +15,8 @@ let package = Package(
     targets: [
         .target(
             name: "GinkgoPluginABI",
-            path: "Sources/GinkgoPluginABI"
+            path: "Sources/GinkgoPluginABI",
+            publicHeadersPath: "include"
         ),
     ]
 )

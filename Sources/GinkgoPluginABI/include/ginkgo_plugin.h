@@ -86,4 +86,9 @@ const ginkgo_plugin_functions *ginkgo_plugin_entry_v1(void);
 }
 #endif
 
+/* Sync host/client vtables (dev.ginkgo.sync). Pulled in here so SwiftPM's
+   GinkgoPluginABI clang module always exports ginkgo_sync_host_v1 to Swift
+   importers, not only to C translation units that include this file. */
+#include "ginkgo_sync_host.h"
+
 #endif /* GINKGO_PLUGIN_ABI_H */
