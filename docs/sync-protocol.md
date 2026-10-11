@@ -1,30 +1,52 @@
-# Ginkgo Sync Protocol v1
+# Ginkgo Sync Protocol (ABI v2)
 
 Authoritative wire format for the OFFICIAL sync plugin (`dev.ginkgo.sync`,
-sync ABI v1). The plugin owns this protocol; the host only speaks the
+sync ABI v2). The plugin owns this protocol; the host only speaks the
 decrypted record spelling of `ginkgo_sync_host.h`. Everything here is
-versioned by `schemaVersion: 1` (payload plaintext) and
-`GINKGO_SYNC_ABI_VERSION` (the C seam).
+versioned by `schemaVersion: 1` (payload plaintext — unchanged since v1)
+and `GINKGO_SYNC_ABI_VERSION = 2` (the C seam; v1 structs and symbols were
+renamed, never re-used).
 
-The server (`ginkgo-api` `/v1/sync/...`, sync plan KTD9) stores ciphertext
-only: no field below marked *ciphertext* is inspectable server-side, and no
-key or plaintext code ever reaches it.
+The server (`ginkgo-api` `/v1/sync/...`) stores ciphertext only: no field
+below marked *ciphertext* is inspectable server-side, and no key, plaintext
+code, or subscription key ever reaches it in the clear over the wire
+(HTTPS) or at rest.
 
 ## Transport
 
 | Route | Body / query | Response |
 | --- | --- | --- |
-| `POST /v1/sync/vaults` | `{"deviceName","devicePublicKey"}` | `201 {"vaultId","deviceId","token","quotaBytes"}` |
+| `POST /v1/sync/vaults` | `{"deviceName","devicePublicKey","subscriptionKey"?,"replaceExisting"?}` | `201 {"vaultId","deviceId","token","quotaBytes","perFileLimitBytes"}` |
 | `POST /v1/sync/vaults/join` | `{"code","deviceName","devicePublicKey"}` | `200 {"vaultId","deviceId","token","encryptedKeyMaterial","quotaBytes"}` |
 | `POST /v1/sync/vaults/{id}/pairing-codes` | `{"codeHash","encryptedKeyMaterial","ttlSeconds"}` | `201 {"expiresAt"}` |
 | `GET /v1/sync/vaults/{id}/changes?cursor&limit` | — | `200 {"changes":[{"id","deviceId","payload","createdAt"}],"nextCursor"}` |
 | `POST /v1/sync/vaults/{id}/changes` | `{"payload"}` | `201 {"id","usedBytes","limitBytes"}` |
-| `PUT /v1/sync/vaults/{id}/blobs/{blobId}` | body = raw ciphertext | `200 {"usedBytes","limitBytes"}` |
+| `PUT /v1/sync/vaults/{id}/blobs/{blobId}` | body = raw ciphertext, `Content-Length` required | `200 {"usedBytes","limitBytes"}` |
 | `GET /v1/sync/vaults/{id}/blobs/{blobId}` | — | `200` raw ciphertext |
-| `GET /v1/sync/vaults/{id}/quota` | — | `200 {"usedBytes","limitBytes","remainingBytes"}` |
+| `DELETE /v1/sync/vaults/{id}/blobs/{blobId}` | — | `200` (soft delete; see Blob lifecycle) |
+| `POST /v1/sync/vaults/{id}/blobs/missing` | `{"blobIds":[...]}` | `200 {"missing":[...]}` |
+| `GET /v1/sync/vaults/{id}/quota` | — | `200 {"usedBytes","limitBytes","remainingBytes","perFileLimitBytes","deleteAt"?,"subscription"?}` |
+| `GET /v1/sync/vaults/{id}/devices` | — | `200 {"devices":[...]}` |
+| `POST /v1/sync/vaults/{id}/subscription` | `{"subscriptionKey"}` | `200 {"usedBytes","limitBytes","perFileLimitBytes"}` |
+| `POST /v1/sync/vaults/{id}/billing-portal` | `{}` | `200 {"url"}` |
+| `POST /v1/sync/vaults/{id}/web-links` | `{}` | `201 {"code","url"?,"expiresAt"}` |
 
 Auth: `Authorization: Bearer <device token>` on every route except
-create/join. Errors: `{"error":"<machine-readable>"}` with 400/401/410/413.
+create/join. Errors: `{"error":"<machine-readable>"}` with
+400/401/402/409/410/413/503:
+
+- `401 vaultDeleted` — the vault was purged; the ONLY code that clears the
+  plugin's local vault configuration.
+- `402 subscriptionInactive` (+ `deleteAt`) — the bound subscription
+  lapsed; stop the cycle, keep the configuration, surface `deleteAt` (R7).
+- `402 vaultReplaced` (+ `deleteAt`) — this vault was replaced on its
+  subscription; same handling, swap-back-able for 30 days (R27).
+- `409 vaultExists` — the subscription key is bound to another live vault;
+  the host explains the replacement and may re-call `create_vault` with
+  `replaceExisting: true` (R27).
+- `400 invalidSubscriptionKey` — unknown key.
+- `413 quotaExceeded` / `413 attachmentOverLimit` — see the cycle rules.
+- `503 billing surface disabled` — the server's billing is unconfigured.
 
 Default base URL `https://ginkgo-api.ikit.fun` (same origin as the
 marketplace; moves with it).
@@ -89,46 +111,118 @@ is displayed by the minting device's host UI only.
   bytes ride in the blob store. Batches cap at 100 records; a device pushes
   repeatedly until its export cursor drains.
 - `blobs` lists the blob ids uploaded alongside this batch (each id PUT once
-  per device lifetime; content addressing dedupes across devices).
+  per device lifetime; content addressing dedupes across devices). An
+  attachment refused `413 attachmentOverLimit` is dropped from this list and
+  the batch still pushes (KTD6) — the record travels metadata-only.
 - Receivers skip changes whose `deviceId` equals their own.
 - LWW (`syncUpdatedAt`, then `deviceID` tie-break) lives in the HOST; the
   plugin just applies batches idempotently.
 
-## Sync cycle (`run_sync_cycle`)
+## Host ↔ plugin attachment channel (v2, KTD8)
+
+The v2 export envelope (`export_changes_since`) carries attachment ids and
+SIZES only — never inline bytes:
+
+```json
+{"records": [...],
+ "blobs": {"<blobId>": <plaintext size in bytes>, ...},
+ "releasedBlobs": ["<blobId>", ...],
+ "nextRevision": 42}
+```
+
+- The plugin asks the server (`POST blobs/missing`) which ids the vault
+  lacks, then reads each needed attachment through the existing
+  `read_blob_for_record`, encrypts, and PUTs it — one attachment's
+  plaintext in memory at a time.
+- `releasedBlobs` lists attachments orphaned by THIS batch's tombstones
+  (computed by the host against its live records, KTD10). The plugin
+  DELETEs each before pushing the batch, so an over-quota vault frees space
+  first; a failed DELETE retries next cycle.
+- On pull, the plugin downloads each foreign attachment once, decrypts, and
+  feeds `apply_changes` record-by-record (or byte-budgeted small batches) —
+  never a whole 100-record batch's attachments at once. A 404 on download
+  applies the record as "unavailable" and moves the cursor on (KTD10).
+
+## Sync cycle (`run_sync_cycle`, v2 order)
 
 One pass, returning 0 on success:
 
-1. **Push**: `export_changes_since(lastExportRevision, 100)` until a batch
-   comes back empty. For each batch: PUT any not-yet-uploaded blobs, then
-   POST the sealed payload. On 201, advance `lastExportRevision` to the
-   batch's `nextRevision` and persist it (a crash mid-batch at worst
-   re-pushes idempotently).
-2. **Pull**: `GET changes?cursor=pullCursor` until a page is empty. For
-   each foreign change: open the payload, GET missing blobs, decrypt, then
-   `apply_changes(records, blobs)`. Advance `pullCursor` per applied page.
-3. **Quota**: `GET quota` → cache for `get_state`.
-4. `notify_status` with `{"phase":"done","pushed":N,"pulled":N,"applied":N}`
-   (or `{"phase":"failed","error":"..."}`); state file persists cursors,
+1. **Limits**: `notify_status {"phase":"limits","perFileLimitBytes":N}` —
+   the plan's per-attachment cap the host must export against (KTD6); the
+   host also takes it from `create_vault`/`join_vault` state responses.
+2. **Pull** (KTD10's pull-before-push): `GET changes?cursor=pullCursor`
+   until a page is empty; per foreign change, fetch + decrypt + apply as
+   above, advancing `pullCursor` per page.
+3. **Export**: `export_changes_since(lastExportRevision, 100)` until a
+   batch is empty.
+4. **Release**: DELETE each of the batch's `releasedBlobs` (KTD10) — before
+   the push, so over-quota vaults free space first. Failed ids retry next
+   cycle.
+5. **Missing**: `POST blobs/missing` with the batch's blob ids; only the
+   answer's ids are uploaded (never trust the local uploaded cache alone).
+6. **Upload**: for each missing id, `read_blob_for_record` → encrypt →
+   PUT. `413 attachmentOverLimit` skips that id (drop from the batch's
+   `blobs` list, keep pushing — the record travels metadata-only, KTD6).
+   `413 quotaExceeded` ends the push: the batch is NOT pushed, the export
+   cursor does NOT move, status reports over-quota; the batch re-uploads
+   after space frees.
+7. **Push**: POST the sealed payload; on 201 advance `lastExportRevision`
+   to the batch's `nextRevision` and persist it (a crash mid-batch at
+   worst re-pushes idempotently).
+8. **Quota**: `GET quota` → cache for `get_state`.
+9. `notify_status` with `{"phase":"done","pushed":N,"pulled":N,"applied":N}`
+   (or `{"phase":"failed","error":"..."}`); the state file persists cursors,
    `lastSyncAt`, `lastError`.
 
-Quota (413): fail the cycle without advancing cursors — existing data stays
-readable, the new upload is refused (R15/R16). `cancel` stops between
+`402` responses stop the cycle (see Transport), keeping the local
+configuration; only `401 vaultDeleted` clears it. `cancel` stops between
 batches and blob uploads; partial progress is kept.
 
-## `get_state`
+### Daily reconciliation (KTD10)
+
+At least once a day the plugin calls the host's `list_live_blob_ids`
+(`{"blobIds":[...]}` — every attachment its LIVE records still reference),
+asks `missing`, and re-uploads whatever the vault lacks from local bytes —
+so a blob device A released cannot be lost while device B's live records
+still reference it.
+
+## `get_state` (v2)
 
 ```json
 {"configured": <bool>,
  "vaultId": "<uuid>", "deviceId": "<uuid>", "deviceName": "...",
  "lastSyncAt": <unix seconds>,      // after a first successful pass
  "lastError": "...",                // while the last pass failed
- "quota": {"usedBytes":N,"limitBytes":N,"remainingBytes":N}}
+ "quota": {"usedBytes":N,"limitBytes":N,"remainingBytes":N},
+ "subscription": {"status":"...","plan":"...",
+                  "deleteAt":<unix seconds>, "perFileLimitBytes":N}}
 ```
+
+`subscription` is present only while the vault is bound to one — free
+installs and unbound vaults omit it (R3), and `deleteAt` rides inside it
+while the subscription is not effective (R8).
 
 Plus, on `mint_pairing_code` success only:
 `{"pairingCode":"<8 chars>","pairingExpiresAt":<unix seconds>}`.
 
-`create_vault` / `join_vault` / `mint_pairing_code` failures return
+### v2 client functions (KTD12)
+
+- `mint_web_link("{}")` → `{"code":"<one-time>","url":"<site>/account?code=…","expiresAt":<unix>}`.
+  The host opens the URL; the site trades the code for a 30-day session.
+  The code is single-use, 5 minutes, memory-only (R19).
+- `open_billing_portal("{}")` → `{"url":"<Dodo portal session>"}` for the
+  host to open (R28).
+- `reset_pull_cursor("{}")` → `{"ok":true}`; the next cycle re-pulls from
+  0 — the host calls it once after a license activation so records dropped
+  at the free tier's pull cap are fetched; LWW makes the replay idempotent
+  (KTD11).
+- `rebind_subscription({"subscriptionKey":"..."})` → the `get_state` shape,
+  or the error shape (`vaultExists`, `invalidSubscriptionKey`). The key is
+  request-ONLY: validated server-side, never persisted in the state file
+  or keychain, never logged.
+
+`create_vault` additionally accepts `subscriptionKey` and
+`replaceExisting` (same request-only rule); failures return
 `{"error":"<machine-readable>","message":"<human>"}`.
 
 ## Plugin-side persistence
@@ -137,5 +231,6 @@ Plus, on `mint_pairing_code` success only:
   seed. Never in files, never in the host's stores.
 - `~/Library/Application Support/Ginkgo/PluginState/dev.ginkgo.sync/state.json`:
   vault/device ids and names, export + pull cursors, uploaded blob ids,
-  quota cache, `lastSyncAt`/`lastError`. Deleting this folder (plus the
-  keychain items) is the plugin's full uninstall footprint.
+  quota cache, `lastSyncAt`/`lastError`. Never the subscription key (it is
+  request-only), never a passphrase or vault key. Deleting this folder
+  (plus the keychain items) is the plugin's full uninstall footprint.
