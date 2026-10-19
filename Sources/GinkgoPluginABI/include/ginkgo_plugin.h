@@ -91,4 +91,8 @@ const ginkgo_plugin_functions *ginkgo_plugin_entry_v1(void);
    importers, not only to C translation units that include this file. */
 #include "ginkgo_sync_host.h"
 
+/* History-append host side vtable (historyAppend capability). Same module
+   export reason as ginkgo_sync_host.h. */
+#include "ginkgo_history_host.h"
+
 #endif /* GINKGO_PLUGIN_ABI_H */

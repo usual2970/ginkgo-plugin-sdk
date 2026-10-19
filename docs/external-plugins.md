@@ -6,12 +6,12 @@ directory per plugin. There is no marketplace and no in-app installer:
 installing a plugin is copying a folder, and enabling one is an explicit
 Settings act with per-capability consent.
 
-This document is the **author-facing** interface reference. You do not
-need access to the Ginkgo app source: add this repository as a SwiftPM
-dependency (or include `ginkgo_plugin.h` directly in C/Rust). Reference
-implementations and a bundle script live in the private
-`usual2970/ginkgo-plugins` samples; copy their layout from this doc if
-you start from scratch.
+This is the authoritative interface reference for the host tree. **Third-
+party authors** should use the public
+[`ginkgo-plugin-sdk`](https://github.com/usual2970/ginkgo-plugin-sdk)
+repository (`docs/external-plugins.md` there) — no access to this private
+repo is required. Sample bundles for authors with workspace access live in
+the `plugins/` submodule (`plugins/README.md`).
 
 ## Bundle layout
 
@@ -60,12 +60,15 @@ an older host.
   optional; the UI falls back to English.
 - `runsOnCopy` — `true` for the copy-time match pass (default), `false`
   for on-demand-only plugins.
-- `capabilities` — a subset of `network`, `clipboardRead`, `files`.
-  Declaring one is not a feature request: it is what the Settings grant
-  block asks the user to consent to before the switch passes. A grant is
-  **consent, not enforcement** — Ginkgo cannot technically restrict what
-  a plugin does, and an update that declares more than was granted
-  forces the plugin back off until re-consented.
+- `capabilities` — a subset of `network`, `clipboardRead`, `files`,
+  `historyAppend`. Declaring one is not a feature request: it is what
+  the Settings grant block asks the user to consent to before the switch
+  passes. A grant is **consent, not enforcement** — Ginkgo cannot
+  technically restrict what a plugin does, and an update that declares
+  more than was granted forces the plugin back off until re-consented.
+  `historyAppend` additionally requires the bundle to export
+  `ginkgo_plugin_bind_host_v1` (see History append below); missing that
+  symbol rejects the package at load.
 - `commandParameter` — declares an on-demand conversion with a parameter
   (the History `/` command list shows the candidates); requires a
   `convert` entry in the table.
@@ -77,27 +80,11 @@ architecture → code signature → quarantine → crash sentinel → load.
 
 ## The C interface (version 1)
 
-SwiftPM: depend on the **`GinkgoPluginABI`** product from this package
-(`GinkgoPluginSDK`). Pin a release tag whose major version matches
-`GINKGO_PLUGIN_INTERFACE_VERSION` (currently `1.x`).
-
-```swift
-// Package.swift (excerpt)
-dependencies: [
-    .package(url: "https://github.com/usual2970/ginkgo-plugin-sdk.git", from: "1.0.0"),
-],
-targets: [
-    .target(
-        name: "MyPlugin",
-        dependencies: [.product(name: "GinkgoPluginABI", package: "ginkgo-plugin-sdk")]
-    ),
-]
-```
-
-C and other languages: `#include` `Sources/GinkgoPluginABI/include/ginkgo_plugin.h`
-and export `ginkgo_plugin_entry_v1` with the table layout below.
-
-A Swift plugin writes the entry with `@_cdecl`:
+SwiftPM product **`GinkgoPluginABI`**: in this workspace, the
+`ginkgo/GinkgoPluginABI` target; for external authors, the public
+**ginkgo-plugin-sdk** package (see its README). C/Rust plugins include
+`ginkgo_plugin.h` and export `ginkgo_plugin_entry_v1`. A Swift plugin
+writes the entry with `@_cdecl`:
 
 ```swift
 import GinkgoPluginABI
@@ -142,6 +129,42 @@ released exactly once.
   `languagePackMissing`, `unsupportedLanguagePair`, `inputTooLarge`); unknown
   values collapse to a generic failure.
 
+## History append (`historyAppend`)
+
+Optional side vtable in `ginkgo_history_host.h` (included from
+`ginkgo_plugin.h`). `GINKGO_PLUGIN_INTERFACE_VERSION` stays 1;
+`ginkgo_plugin_functions` is unchanged. Mirrors the sync host pattern.
+
+1. Manifest declares `"capabilities": ["historyAppend"]` (raw value
+   `historyAppend` / `GINKGO_CAPABILITY_HISTORY_APPEND`).
+2. Bundle exports `ginkgo_plugin_bind_host_v1`
+   (`GINKGO_PLUGIN_BIND_HOST`). Declared capability without the symbol
+   fails load. Symbol without the capability is never bound.
+3. After the user grants `historyAppend`, the host builds a
+   `ginkgo_history_host_v1` and calls the bind entry once. Store the
+   pointer; call `create_clip` later; release responses with
+   `free_string`.
+4. `create_clip` is only available during `convert`. During `match`,
+   outside either phase, or while another `create_clip` is on the stack,
+   the host returns `{"error":"unavailable"}`. A missing grant returns
+   `{"error":"notGranted"}`.
+
+Request JSON (caller-owned for the call):
+
+```json
+{"kind":"text","text":"standup notes","title":"Standup","tags":["notes"]}
+```
+
+`kind` is `text` or `image` (`imageBase64` for image bytes). `fileURLs`
+is refused in v1 (`{"error":"empty"}`). Optional `title` and `tags`.
+
+Success: `{"id":"<object-uri>","created":true|false}` — `created` is
+false when a live row with the same content hash was refreshed.
+Refusal: `{"error":"empty"|"insertLimit"|"saveFailed"|"malformed"|"unavailable"|"notGranted"}`.
+
+The host never writes the pasteboard for this path. `match` stays a pure
+read even when the plugin holds a bound host pointer.
+
 ## Contracts the host relies on
 
 - **Threading:** every table function may be called from any thread,
@@ -152,6 +175,7 @@ released exactly once.
   pasteboard. Adopt goes through the host, which carries its own
   write-marker so nothing loops back into history. The host cannot
   enforce this; the manifest's grant flow is consent, not a sandbox.
+  History append uses the host's `create_clip` instead of the pasteboard.
 - **Privacy:** clipboard content reaches your process only after the
   user has enabled your plugin — which, for anything declared, means
   they have granted it. Nothing else about the user's clipboard leaves
@@ -173,9 +197,21 @@ released exactly once.
 
 ## Release builds and library validation
 
-Release Ginkgo builds are signed with the hardened runtime, which by
-default refuses to load libraries not signed by the app's own team —
-exactly what a third-party plugin is. The shipping app carries
+Release builds are signed with the hardened runtime, which by default
+refuses to load libraries not signed by the app's own team — exactly
+what a third-party plugin is. `Ginkgo.entitlements` carries
 `com.apple.security.cs.disable-library-validation` for this reason; the
 host's own per-bundle validation (signature, quarantine, architecture,
 sentinel) remains the trust boundary.
+
+Verified locally with an ad-hoc stand-in for the release identity
+(2026-10): a hardened-runtime probe without the entitlement refuses a
+sample bundle ("different Team IDs" — an ad-hoc host has no team at
+all, the strictest case), re-signed with the entitlement it loads the
+bundle and its entry symbol, and a bundle with one corrupted byte
+inside a code slice is still killed by the kernel (SIGKILL) even with
+the entitlement — opting out of library validation does not opt out of
+tamper detection. Note dyld only judges the slice it actually maps: a
+byte poked into a fat-binary alignment gap loads fine, which the
+host's own scan-time signature check catches. The Developer ID +
+notarized combination itself remains smoke item 85.
