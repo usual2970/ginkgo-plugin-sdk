@@ -119,7 +119,7 @@ host passes it back through your `free_string` — exactly once per
 returned pointer, before any decoding, so a malformed response is still
 released exactly once.
 
-- match request: `{"text": "<the copied text>"}`
+- match request: `{"text": "<the copied text>"}` — the host may also send optional keys such as `"pair"` (curated Dictionary language-pair id). Plugins that only read `text` ignore unknown keys; additive optional request fields do not bump `interface_version`.
 - match response: `{"title": "...", "body": "...", "adoptedOutput": "..."}`
   (include all three keys; `adoptedOutput` is what Adopt writes)
 - convert request: `{"text": "...", "parameter": "<chosen candidate id>"}`

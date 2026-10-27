@@ -45,6 +45,10 @@ extern "C" {
 /* Request and response strings: NUL-terminated UTF-8 JSON.
  *
  * match request:  {"text": "<the copied text>"}
+ *                 Optional host-supplied keys may appear alongside "text"
+ *                 (e.g. "pair": "<curated id>" for Dictionary). Plugins that
+ *                 only decode "text" ignore unknown keys; interface_version
+ *                 stays 1 for additive optional request fields.
  * match response: {"title": "...", "body": "...", "adoptedOutput": "..."}
  *                 or NULL for "this plugin has nothing to say".
  * convert request:  {"text": "...", "parameter": "<chosen candidate id>"}
