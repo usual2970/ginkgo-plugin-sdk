@@ -71,7 +71,11 @@ an older host.
   symbol rejects the package at load.
 - `commandParameter` — declares an on-demand conversion with a parameter
   (the History `/` command list shows the candidates); requires a
-  `convert` entry in the table.
+  `convert` entry in the table. A `convert` entry WITHOUT a
+  `commandParameter` (a parameterless, immediate conversion) is host-
+  gated in v1: only the first-party `dev.ginkgo.ocr` image convert runs
+  that way — a third-party manifest with convert-but-no-parameter stays
+  a plain copy-time plugin.
 
 Validation order (each failure has its own typed reason on the Settings
 page): manifest readable → schema/interface versions → id rules →
@@ -95,6 +99,7 @@ public func ginkgo_plugin_entry_v1() -> UnsafePointer<ginkgo_plugin_functions>? 
         interface_version: 1,                    // #define invisible to Swift
         match: { MyPlugin.matchImpl($0) },       // literal closures: @convention(c)
         convert: nil,                            // nil unless a commandParameter is declared
+                                               // (host-gated first-party image convert excepted)
         free_string: { MyPlugin.freeImpl($0) }
     )
     let pointer = UnsafeMutablePointer<ginkgo_plugin_functions>.allocate(capacity: 1)
@@ -122,7 +127,12 @@ released exactly once.
 - match request: `{"text": "<the copied text>"}` — the host may also send optional keys such as `"pair"` (curated Dictionary language-pair id). Plugins that only read `text` ignore unknown keys; additive optional request fields do not bump `interface_version`.
 - match response: `{"title": "...", "body": "...", "adoptedOutput": "..."}`
   (include all three keys; `adoptedOutput` is what Adopt writes)
-- convert request: `{"text": "...", "parameter": "<chosen candidate id>"}`
+- convert request: `{"text": "...", "parameter": "<chosen candidate id>"}`;
+  the host may also attach an optional `"imageBase64"` key (PNG bytes)
+  for image clips — v1 gates that key to the first-party
+  `dev.ginkgo.ocr` id, so third-party plugins never receive image
+  payloads. Additive optional request fields do not bump
+  `interface_version`.
 - convert response: the success shape, or `{"error": "failed"}` /
   `{"error": "inputTooLarge"}`. Optional `"reason"` (string) maps to typed
   hints when recognized (`sourceLanguageUndetected`, `alreadyInTargetLanguage`,

@@ -52,6 +52,13 @@ extern "C" {
  * match response: {"title": "...", "body": "...", "adoptedOutput": "..."}
  *                 or NULL for "this plugin has nothing to say".
  * convert request:  {"text": "...", "parameter": "<chosen candidate id>"}
+ *                 Optional keys may appear alongside (same additive rule as
+ *                 match): "imageBase64" carries base64 PNG image bytes for
+ *                 HOST-GATED first-party ids only (v1 allowlist:
+ *                 dev.ginkgo.ocr — the OCR plan's KTD1/KTD2 bridge). Third
+ *                 parties must treat the key as absent and must not expect
+ *                 image payloads; generalizing it requires a future
+ *                 payload-kinds grant model, not interface_version 2.
  * convert response: the success shape above, or
  *                 {"error": "failed" | "inputTooLarge", "reason": "<optional>"}.
  *                 When "reason" is present the host maps known values to typed
@@ -69,8 +76,11 @@ typedef struct ginkgo_plugin_functions {
     /* Copy-time inspection. NULL inside the table is invalid for v1. */
     const char *(*match)(const char *request_json);
 
-    /* On-demand conversion. NULL when the manifest declares no command
-     * parameter; the host never calls it otherwise. */
+    /* On-demand conversion. Required when the manifest declares a command
+     * parameter. A manifest WITHOUT one may still export convert — but the
+     * v1 host calls such a parameterless convert only for its own gated
+     * first-party ids (dev.ginkgo.ocr); for any other plugin convert stays
+     * NULL and is never called. */
     const char *(*convert)(const char *request_json);
 
     /* Releases a string this plugin returned. The host calls it exactly
