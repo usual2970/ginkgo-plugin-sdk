@@ -21,6 +21,7 @@ HexColor.ginkgoplugin/
     Info.plist                 CFBundleExecutable (+ the usual BNDL keys)
     MacOS/HexColor             the plugin binary (dylib or bundle executable)
     Resources/manifest.json    validated BEFORE any code runs
+    Resources/icon.png         optional package logo (see `icon` below)
 ```
 
 ## The manifest
@@ -43,6 +44,7 @@ an older host.
   "descriptionZhHans": "解读十六进制颜色——一眼看到解码后的 RGB。",
   "runsOnCopy": true,
   "capabilities": ["network"],
+  "icon": "icon.png",
   "commandParameter": {
     "label": "Case",
     "labelZhHans": "大小写",
@@ -69,6 +71,13 @@ an older host.
   `historyAppend` additionally requires the bundle to export
   `ginkgo_plugin_bind_host_v1` (see History append below); missing that
   symbol rejects the package at load.
+- `icon` — optional package logo: one `.png` file name (no directory
+  component — it must sit directly in `Contents/Resources`), PNG only,
+  at most 256 KiB and 512 px on its longest edge. Ginkgo shows it on the
+  plugin's card and wherever the plugin is named; a missing or invalid
+  icon never rejects the package — the UI simply falls back to the
+  default tile. There is no validation-order entry for it because it
+  cannot fail a package.
 - `commandParameter` — declares an on-demand conversion with a parameter
   (the History `/` command list shows the candidates); requires a
   `convert` entry in the table. A `convert` entry WITHOUT a
