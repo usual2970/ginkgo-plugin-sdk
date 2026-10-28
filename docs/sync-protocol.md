@@ -48,7 +48,7 @@ create/join. Errors: `{"error":"<machine-readable>"}` with
 - `413 quotaExceeded` / `413 attachmentOverLimit` — see the cycle rules.
 - `503 billing surface disabled` — the server's billing is unconfigured.
 
-Default base URL `https://ginkgo-api.ikit.fun` (same origin as the
+Default base URL `https://api.ginkgo.ink` (same origin as the
 marketplace; moves with it).
 
 ## Cryptography
